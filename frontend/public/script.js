@@ -1,6 +1,15 @@
 // Get connection indicator element
 const indicator = document.getElementById('connectionIndicator');
 
+// Get canvas element and set up initial sizing
+const canvas = document.getElementById('canvas');
+if (canvas) {
+  // Set canvas resolution to match container size
+  const rect = canvas.parentElement.getBoundingClientRect();
+  canvas.width = rect.width;
+  canvas.height = rect.height;
+}
+
 // Establish WebSocket connection
 const ws = new WebSocket('ws://localhost:3000/connect');
 
@@ -36,13 +45,8 @@ ws.addEventListener('message', (event) => {
   }
 });
 
-// Get canvas element and set up click listener
-const canvas = document.getElementById('canvas');
+// Set up click listener on canvas
 if (canvas) {
-  // Set canvas resolution to match container size
-  const rect = canvas.parentElement.getBoundingClientRect();
-  canvas.width = rect.width;
-  canvas.height = rect.height;
   canvas.addEventListener('click', (event) => {
     const rect = canvas.getBoundingClientRect();
     const x = event.clientX - rect.left;
