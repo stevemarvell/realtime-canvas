@@ -20,19 +20,31 @@ const server = http.createServer(app);
 // Create WebSocket server
 const wss = new WebSocket.Server({ server, path: '/connect' });
 
+// Track connected clients
+const clients = new Set<WebSocket>();
+
 // Handle WebSocket connections
 wss.on('connection', (ws) => {
   console.log('Client connected');
+  clients.add(ws);
 
   // Handle incoming messages from client
   ws.on('message', (data: string) => {
     const message = JSON.parse(data);
     console.log('Received press event:', message);
+
+    // Broadcast event to all connected clients except the sender
+    clients.forEach((client) => {
+      if (client !== ws && client.readyState === WebSocket.OPEN) {
+        client.send(JSON.stringify(message));
+      }
+    });
   });
 
   // Handle client disconnect
   ws.on('close', () => {
     console.log('Client disconnected');
+    clients.delete(ws);
   });
 
   // Handle errors
