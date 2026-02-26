@@ -1,14 +1,19 @@
+// Get connection indicator element
+const indicator = document.getElementById('connectionIndicator');
+
 // Establish WebSocket connection
 const ws = new WebSocket('ws://localhost:3000/connect');
 
 // Handle WebSocket connection open
 ws.addEventListener('open', () => {
   console.log('WebSocket connection established');
+  indicator.classList.add('connected');
 });
 
 // Handle WebSocket connection close
 ws.addEventListener('close', () => {
   console.log('WebSocket connection closed');
+  indicator.classList.remove('connected');
 });
 
 // Handle WebSocket errors
