@@ -39,6 +39,10 @@ ws.addEventListener('message', (event) => {
 // Get canvas element and set up click listener
 const canvas = document.getElementById('canvas');
 if (canvas) {
+  // Set canvas resolution to match container size
+  const rect = canvas.parentElement.getBoundingClientRect();
+  canvas.width = rect.width;
+  canvas.height = rect.height;
   canvas.addEventListener('click', (event) => {
     const rect = canvas.getBoundingClientRect();
     const x = event.clientX - rect.left;
