@@ -1,0 +1,426 @@
+/**
+ * Client End-to-End Tests
+ * Tests complete client-server-client communication
+ */
+
+import { startTestServer, createAndConnectClient, waitForMessage } from './testUtils';
+
+describe('Client E2E Tests', () => {
+  let server: any;
+  let port: number;
+
+  beforeEach(async () => {
+    const result = await startTestServer();
+    server = result.server;
+    port = result.port;
+  });
+
+  afterEach(async () => {
+    if (server?.cleanup) {
+      await server.cleanup();
+    }
+  });
+
+  describe('Multi-Client Communication', () => {
+    it('should allow client A to send, client B to receive', async () => {
+      const clientA = await createAndConnectClient(`ws://localhost:${port}/connect`);
+      const clientB = await createAndConnectClient(`ws://localhost:${port}/connect`);
+
+      const testMessage = { x: 100, y: 200, timestamp: '2024-01-01T00:00:00Z' };
+      clientA.ws.send(JSON.stringify(testMessage));
+
+      const received = await waitForMessage(clientB.ws, 1000);
+      expect(received).toEqual(testMessage);
+
+      clientA.close();
+      clientB.close();
+    });
+
+    it('should handle three clients communicating', async () => {
+      const clientA = await createAndConnectClient(`ws://localhost:${port}/connect`);
+      const clientB = await createAndConnectClient(`ws://localhost:${port}/connect`);
+      const clientC = await createAndConnectClient(`ws://localhost:${port}/connect`);
+
+      // A sends
+      clientA.ws.send(JSON.stringify({ from: 'A' }));
+      const receivedByB1 = await waitForMessage(clientB.ws, 1000);
+      const receivedByC1 = await waitForMessage(clientC.ws, 1000);
+
+      expect(receivedByB1.from).toBe('A');
+      expect(receivedByC1.from).toBe('A');
+
+      // B sends
+      clientB.ws.send(JSON.stringify({ from: 'B' }));
+      const receivedByA = await waitForMessage(clientA.ws, 1000);
+      const receivedByC2 = await waitForMessage(clientC.ws, 1000);
+
+      expect(receivedByA.from).toBe('B');
+      expect(receivedByC2.from).toBe('B');
+
+      // C sends
+      clientC.ws.send(JSON.stringify({ from: 'C' }));
+      const receivedByA2 = await waitForMessage(clientA.ws, 1000);
+      const receivedByB2 = await waitForMessage(clientB.ws, 1000);
+
+      expect(receivedByA2.from).toBe('C');
+      expect(receivedByB2.from).toBe('C');
+
+      clientA.close();
+      clientB.close();
+      clientC.close();
+    });
+
+    it('should exclude sender from broadcasts', async () => {
+      const clientA = await createAndConnectClient(`ws://localhost:${port}/connect`);
+      const clientB = await createAndConnectClient(`ws://localhost:${port}/connect`);
+
+      let aReceivedOwnMessage = false;
+      const listener = () => {
+        aReceivedOwnMessage = true;
+      };
+
+      clientA.ws.addEventListener('message', listener);
+
+      clientA.ws.send(JSON.stringify({ x: 100 }));
+      const receivedByB = await waitForMessage(clientB.ws, 1000);
+
+      expect(receivedByB.x).toBe(100);
+
+      // Wait to ensure A doesn't receive its own message
+      await new Promise(resolve => setTimeout(resolve, 200));
+      expect(aReceivedOwnMessage).toBe(false);
+
+      clientA.ws.removeEventListener('message', listener);
+      clientA.close();
+      clientB.close();
+    });
+  });
+
+  describe('Sequential Operations', () => {
+    it('should handle multiple sequential messages', async () => {
+      const clientA = await createAndConnectClient(`ws://localhost:${port}/connect`);
+      const clientB = await createAndConnectClient(`ws://localhost:${port}/connect`);
+
+      for (let i = 0; i < 5; i++) {
+        clientA.ws.send(JSON.stringify({ id: i }));
+        const received = await waitForMessage(clientB.ws, 1000);
+        expect(received.id).toBe(i);
+      }
+
+      clientA.close();
+      clientB.close();
+    });
+
+    it('should handle interleaved client messages', async () => {
+      const clientA = await createAndConnectClient(`ws://localhost:${port}/connect`);
+      const clientB = await createAndConnectClient(`ws://localhost:${port}/connect`);
+
+      const aMessages: any[] = [];
+      const bMessages: any[] = [];
+
+      clientA.ws.addEventListener('message', (event: any) => {
+        aMessages.push(JSON.parse(event.data));
+      });
+
+      clientB.ws.addEventListener('message', (event: any) => {
+        bMessages.push(JSON.parse(event.data));
+      });
+
+      // Interleave: A, B, A, B, A
+      clientA.ws.send(JSON.stringify({ turn: 1, from: 'A' }));
+      clientB.ws.send(JSON.stringify({ turn: 2, from: 'B' }));
+      clientA.ws.send(JSON.stringify({ turn: 3, from: 'A' }));
+      clientB.ws.send(JSON.stringify({ turn: 4, from: 'B' }));
+      clientA.ws.send(JSON.stringify({ turn: 5, from: 'A' }));
+
+      await new Promise(resolve => setTimeout(resolve, 300));
+
+      expect(aMessages.length).toBe(2); // Received B's messages
+      expect(bMessages.length).toBe(3); // Received A's messages
+
+      expect(aMessages[0].from).toBe('B');
+      expect(bMessages[0].from).toBe('A');
+
+      clientA.close();
+      clientB.close();
+    });
+  });
+
+  describe('Data Integrity Across Network', () => {
+    it('should preserve exact coordinates', async () => {
+      const clientA = await createAndConnectClient(`ws://localhost:${port}/connect`);
+      const clientB = await createAndConnectClient(`ws://localhost:${port}/connect`);
+
+      const coordinates = [
+        { x: 0, y: 0 },
+        { x: 100.5, y: 200.75 },
+        { x: 1000, y: 2000 },
+        { x: 0.001, y: 0.999 },
+      ];
+
+      for (const coord of coordinates) {
+        clientA.ws.send(JSON.stringify(coord));
+        const received = await waitForMessage(clientB.ws, 1000);
+        expect(received.x).toBe(coord.x);
+        expect(received.y).toBe(coord.y);
+      }
+
+      clientA.close();
+      clientB.close();
+    });
+
+    it('should preserve timestamp information', async () => {
+      const clientA = await createAndConnectClient(`ws://localhost:${port}/connect`);
+      const clientB = await createAndConnectClient(`ws://localhost:${port}/connect`);
+
+      const timestamp = new Date().toISOString();
+      clientA.ws.send(JSON.stringify({ x: 100, timestamp }));
+      const received = await waitForMessage(clientB.ws, 1000);
+
+      expect(received.timestamp).toBe(timestamp);
+    });
+
+    it('should preserve complex message structure', async () => {
+      const clientA = await createAndConnectClient(`ws://localhost:${port}/connect`);
+      const clientB = await createAndConnectClient(`ws://localhost:${port}/connect`);
+
+      const complexMessage = {
+        x: 123,
+        y: 456,
+        timestamp: '2024-01-01T12:00:00Z',
+        metadata: {
+          clientId: 'client-a',
+          deviceType: 'mouse',
+        },
+        extra: 'field',
+      };
+
+      clientA.ws.send(JSON.stringify(complexMessage));
+      const received = await waitForMessage(clientB.ws, 1000);
+
+      expect(received).toEqual(complexMessage);
+    });
+  });
+
+  describe('Visual Consistency', () => {
+    it('should display circles at exact same coordinates on both clients', async () => {
+      const clientA = await createAndConnectClient(`ws://localhost:${port}/connect`);
+      const clientB = await createAndConnectClient(`ws://localhost:${port}/connect`);
+
+      const testCoordinates = { x: 256.5, y: 384.25 };
+
+      clientA.ws.send(JSON.stringify(testCoordinates));
+      const received = await waitForMessage(clientB.ws, 1000);
+
+      // Both clients should see the same coordinates
+      expect(received.x).toBe(testCoordinates.x);
+      expect(received.y).toBe(testCoordinates.y);
+
+      clientA.close();
+      clientB.close();
+    });
+
+    it('should maintain visual alignment for rapid clicks', async () => {
+      const clientA = await createAndConnectClient(`ws://localhost:${port}/connect`);
+      const clientB = await createAndConnectClient(`ws://localhost:${port}/connect`);
+
+      const receivedMessages: any[] = [];
+
+      clientB.ws.addEventListener('message', (event: any) => {
+        receivedMessages.push(JSON.parse(event.data));
+      });
+
+      // Send rapid clicks from A
+      const clickSequence = [
+        { x: 100, y: 100 },
+        { x: 200, y: 150 },
+        { x: 150, y: 200 },
+        { x: 250, y: 250 },
+      ];
+
+      for (const coord of clickSequence) {
+        clientA.ws.send(JSON.stringify(coord));
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 300));
+
+      expect(receivedMessages.length).toBe(4);
+      expect(receivedMessages[0].x).toBe(100);
+      expect(receivedMessages[1].x).toBe(200);
+      expect(receivedMessages[2].x).toBe(150);
+      expect(receivedMessages[3].x).toBe(250);
+
+      clientA.close();
+      clientB.close();
+    });
+  });
+
+  describe('Connection Status and Recovery', () => {
+    it('should resume communication after temporary disconnection', async () => {
+      const clientA = await createAndConnectClient(`ws://localhost:${port}/connect`);
+      const clientB = await createAndConnectClient(`ws://localhost:${port}/connect`);
+
+      // Initial message
+      clientA.ws.send(JSON.stringify({ phase: 1 }));
+      const msg1 = await waitForMessage(clientB.ws, 1000);
+      expect(msg1.phase).toBe(1);
+
+      // Simulate disconnection by closing and reconnecting
+      clientA.close();
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      const clientA2 = await createAndConnectClient(`ws://localhost:${port}/connect`);
+
+      // After reconnection, should work normally
+      clientA2.ws.send(JSON.stringify({ phase: 2 }));
+      const msg2 = await waitForMessage(clientB.ws, 1000);
+      expect(msg2.phase).toBe(2);
+
+      clientA2.close();
+      clientB.close();
+    });
+
+    it('should handle multiple client reconnections', async () => {
+      const clientB = await createAndConnectClient(`ws://localhost:${port}/connect`);
+
+      for (let cycle = 0; cycle < 3; cycle++) {
+        const clientA = await createAndConnectClient(`ws://localhost:${port}/connect`);
+
+        clientA.ws.send(JSON.stringify({ cycle }));
+        const received = await waitForMessage(clientB.ws, 1000);
+
+        expect(received.cycle).toBe(cycle);
+        clientA.close();
+      }
+
+      clientB.close();
+    });
+  });
+
+  describe('Error Scenarios', () => {
+    it('should continue communicating after malformed message', async () => {
+      const clientA = await createAndConnectClient(`ws://localhost:${port}/connect`);
+      const clientB = await createAndConnectClient(`ws://localhost:${port}/connect`);
+
+      // Send malformed message
+      (clientA.ws as any).send('{bad json}');
+
+      // Send valid message - should still work
+      await new Promise(resolve => setTimeout(resolve, 100));
+      clientA.ws.send(JSON.stringify({ x: 100, recovery: true }));
+
+      const received = await waitForMessage(clientB.ws, 1000);
+      expect(received.recovery).toBe(true);
+
+      clientA.close();
+      clientB.close();
+    });
+
+    it('should handle server continuing after client error', async () => {
+      const clientA = await createAndConnectClient(`ws://localhost:${port}/connect`);
+      const clientB = await createAndConnectClient(`ws://localhost:${port}/connect`);
+      const clientC = await createAndConnectClient(`ws://localhost:${port}/connect`);
+
+      // A sends bad message
+      (clientA.ws as any).send('{invalid}');
+
+      // B and C should still communicate
+      await new Promise(resolve => setTimeout(resolve, 100));
+      clientB.ws.send(JSON.stringify({ x: 100 }));
+
+      const received = await waitForMessage(clientC.ws, 1000);
+      expect(received.x).toBe(100);
+
+      clientA.close();
+      clientB.close();
+      clientC.close();
+    });
+  });
+
+  describe('Realistic User Interactions', () => {
+    it('should handle realistic multi-user canvas collaboration', async () => {
+      const clientA = await createAndConnectClient(`ws://localhost:${port}/connect`);
+      const clientB = await createAndConnectClient(`ws://localhost:${port}/connect`);
+
+      const aRemoteClicks: any[] = [];
+      const bRemoteClicks: any[] = [];
+
+      clientA.ws.addEventListener('message', (event: any) => {
+        aRemoteClicks.push(JSON.parse(event.data));
+      });
+
+      clientB.ws.addEventListener('message', (event: any) => {
+        bRemoteClicks.push(JSON.parse(event.data));
+      });
+
+      // Simulate user A clicking 3 times
+      for (let i = 0; i < 3; i++) {
+        clientA.ws.send(
+          JSON.stringify({
+            x: 100 + i * 50,
+            y: 100 + i * 50,
+            timestamp: new Date().toISOString(),
+          })
+        );
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 200));
+
+      // Simulate user B clicking 2 times
+      for (let i = 0; i < 2; i++) {
+        clientB.ws.send(
+          JSON.stringify({
+            x: 200 + i * 30,
+            y: 200 + i * 30,
+            timestamp: new Date().toISOString(),
+          })
+        );
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 200));
+
+      // Verify both users saw each other's clicks
+      expect(aRemoteClicks.length).toBe(2); // A saw B's 2 clicks
+      expect(bRemoteClicks.length).toBe(3); // B saw A's 3 clicks
+
+      // Verify order is preserved
+      expect(bRemoteClicks[0].x).toBe(100);
+      expect(bRemoteClicks[1].x).toBe(150);
+      expect(bRemoteClicks[2].x).toBe(200);
+
+      clientA.close();
+      clientB.close();
+    });
+
+    it('should maintain event order in concurrent scenario', async () => {
+      const clientA = await createAndConnectClient(`ws://localhost:${port}/connect`);
+      const clientB = await createAndConnectClient(`ws://localhost:${port}/connect`);
+      const clientC = await createAndConnectClient(`ws://localhost:${port}/connect`);
+
+      const cReceivedEvents: any[] = [];
+      clientC.ws.addEventListener('message', (event: any) => {
+        cReceivedEvents.push(JSON.parse(event.data));
+      });
+
+      // A and B send concurrently
+      clientA.ws.send(JSON.stringify({ sender: 'A', seq: 1 }));
+      clientB.ws.send(JSON.stringify({ sender: 'B', seq: 1 }));
+      clientA.ws.send(JSON.stringify({ sender: 'A', seq: 2 }));
+      clientB.ws.send(JSON.stringify({ sender: 'B', seq: 2 }));
+
+      await new Promise(resolve => setTimeout(resolve, 300));
+
+      // C should have received all 4 messages
+      expect(cReceivedEvents.length).toBe(4);
+
+      // Verify we have both senders' events
+      const senders = new Set(cReceivedEvents.map(e => e.sender));
+      expect(senders.has('A')).toBe(true);
+      expect(senders.has('B')).toBe(true);
+
+      clientA.close();
+      clientB.close();
+      clientC.close();
+    });
+  });
+});

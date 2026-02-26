@@ -1,0 +1,444 @@
+/**
+ * Client Functional Tests
+ * Tests single client behavior with realistic interactions
+ */
+
+describe('Client Functional Tests', () => {
+  let mockWebSocket: any;
+  let originalWebSocket: any;
+
+  beforeEach(() => {
+    // Setup DOM
+    document.body.innerHTML = `
+      <div style="width: 800px; height: 600px;">
+        <canvas id="canvas"></canvas>
+      </div>
+      <div id="connectionIndicator"></div>
+    `;
+
+    // Mock WebSocket
+    mockWebSocket = {
+      CONNECTING: 0,
+      OPEN: 1,
+      CLOSING: 2,
+      CLOSED: 3,
+      readyState: 1,
+      sent: [],
+      send: jest.fn(function(data: string) {
+        this.sent.push(data);
+      }),
+      addEventListener: jest.fn(),
+      removeEventListener: jest.fn(),
+      close: jest.fn(),
+      listeners: new Map(),
+    };
+
+    // Add event triggering capability
+    mockWebSocket._triggerEvent = jest.fn(function(event: string, data: any) {
+      const handlers = this.listeners.get(event) || [];
+      handlers.forEach((handler: Function) => handler(data));
+    });
+
+    // Override addEventListener to track listeners
+    const originalAddEventListener = mockWebSocket.addEventListener;
+    mockWebSocket.addEventListener.mockImplementation(function(this: any, event: string, handler: Function) {
+      if (!this.listeners.has(event)) {
+        this.listeners.set(event, []);
+      }
+      this.listeners.get(event).push(handler);
+      originalAddEventListener.call(this, event, handler);
+    });
+
+    originalWebSocket = (global as any).WebSocket;
+    (global as any).WebSocket = jest.fn(() => mockWebSocket);
+  });
+
+  afterEach(() => {
+    (global as any).WebSocket = originalWebSocket;
+    jest.clearAllMocks();
+  });
+
+  describe('Canvas Interaction', () => {
+    it('should draw circle when clicking canvas', () => {
+      const canvas = document.getElementById('canvas') as HTMLCanvasElement;
+      const ctx = canvas.getContext('2d') as CanvasRenderingContext2D;
+      const arcSpy = jest.spyOn(ctx, 'arc');
+
+      const clickEvent = new MouseEvent('click', {
+        clientX: 100,
+        clientY: 150,
+        bubbles: true,
+      });
+
+      canvas.dispatchEvent(clickEvent);
+
+      expect(arcSpy).toHaveBeenCalled();
+      arcSpy.mockRestore();
+    });
+
+    it('should draw multiple circles independently', () => {
+      const canvas = document.getElementById('canvas') as HTMLCanvasElement;
+      const ctx = canvas.getContext('2d') as CanvasRenderingContext2D;
+      const arcSpy = jest.spyOn(ctx, 'arc');
+
+      const click1 = new MouseEvent('click', { clientX: 100, clientY: 100, bubbles: true });
+      const click2 = new MouseEvent('click', { clientX: 200, clientY: 200, bubbles: true });
+
+      canvas.dispatchEvent(click1);
+      canvas.dispatchEvent(click2);
+
+      expect(arcSpy).toHaveBeenCalledTimes(2);
+      arcSpy.mockRestore();
+    });
+
+    it('should calculate coordinates relative to canvas', () => {
+      const canvas = document.getElementById('canvas') as HTMLCanvasElement;
+      const rect = canvas.getBoundingClientRect();
+
+      const clickEvent = new MouseEvent('click', {
+        clientX: rect.left + 50,
+        clientY: rect.top + 75,
+        bubbles: true,
+      });
+
+      canvas.dispatchEvent(clickEvent);
+      const sent = JSON.parse(mockWebSocket.sent[0]);
+
+      expect(sent.x).toBeCloseTo(50, 0);
+      expect(sent.y).toBeCloseTo(75, 0);
+    });
+
+    it('should handle click at canvas origin', () => {
+      const canvas = document.getElementById('canvas') as HTMLCanvasElement;
+      const rect = canvas.getBoundingClientRect();
+
+      const clickEvent = new MouseEvent('click', {
+        clientX: rect.left,
+        clientY: rect.top,
+        bubbles: true,
+      });
+
+      canvas.dispatchEvent(clickEvent);
+      const sent = JSON.parse(mockWebSocket.sent[0]);
+
+      expect(sent.x).toBeCloseTo(0, 0);
+      expect(sent.y).toBeCloseTo(0, 0);
+    });
+
+    it('should handle click at canvas edges', () => {
+      const canvas = document.getElementById('canvas') as HTMLCanvasElement;
+      const rect = canvas.getBoundingClientRect();
+
+      const clickEvent = new MouseEvent('click', {
+        clientX: rect.right - 1,
+        clientY: rect.bottom - 1,
+        bubbles: true,
+      });
+
+      canvas.dispatchEvent(clickEvent);
+      const sent = JSON.parse(mockWebSocket.sent[0]);
+
+      expect(sent.x).toBeGreaterThan(0);
+      expect(sent.y).toBeGreaterThan(0);
+    });
+  });
+
+  describe('Connection Status Display', () => {
+    it('should show connected state on open', () => {
+      const indicator = document.getElementById('connectionIndicator') as HTMLElement;
+      mockWebSocket._triggerEvent('open', {});
+
+      expect(indicator.classList.contains('connected')).toBe(true);
+    });
+
+    it('should show disconnected state on close', () => {
+      const indicator = document.getElementById('connectionIndicator') as HTMLElement;
+      mockWebSocket._triggerEvent('open', {});
+      expect(indicator.classList.contains('connected')).toBe(true);
+
+      mockWebSocket._triggerEvent('close', {});
+      expect(indicator.classList.contains('connected')).toBe(false);
+    });
+
+    it('should update indicator on connection status changes', () => {
+      const indicator = document.getElementById('connectionIndicator') as HTMLElement;
+
+      mockWebSocket._triggerEvent('open', {});
+      expect(indicator.classList.contains('connected')).toBe(true);
+
+      mockWebSocket._triggerEvent('close', {});
+      expect(indicator.classList.contains('connected')).toBe(false);
+
+      mockWebSocket._triggerEvent('open', {});
+      expect(indicator.classList.contains('connected')).toBe(true);
+    });
+  });
+
+  describe('Coordinate Precision', () => {
+    it('should send exact coordinates', () => {
+      const canvas = document.getElementById('canvas') as HTMLCanvasElement;
+      const rect = canvas.getBoundingClientRect();
+
+      const clickEvent = new MouseEvent('click', {
+        clientX: rect.left + 123.456,
+        clientY: rect.top + 456.789,
+        bubbles: true,
+      });
+
+      canvas.dispatchEvent(clickEvent);
+      const sent = JSON.parse(mockWebSocket.sent[0]);
+
+      expect(sent.x).toBeCloseTo(123.456, 2);
+      expect(sent.y).toBeCloseTo(456.789, 2);
+    });
+
+    it('should handle canvas resize', () => {
+      const canvas = document.getElementById('canvas') as HTMLCanvasElement;
+      const container = canvas.parentElement as HTMLElement;
+
+      // Change container size
+      container.style.width = '1000px';
+      container.style.height = '800px';
+
+      const clickEvent = new MouseEvent('click', {
+        clientX: 100,
+        clientY: 150,
+        bubbles: true,
+      });
+
+      canvas.dispatchEvent(clickEvent);
+      const sent = JSON.parse(mockWebSocket.sent[0]);
+
+      expect(sent.x).toBeDefined();
+      expect(sent.y).toBeDefined();
+    });
+  });
+
+  describe('Event Timing', () => {
+    it('should include timestamp in ISO format', () => {
+      const canvas = document.getElementById('canvas') as HTMLCanvasElement;
+      const clickEvent = new MouseEvent('click', {
+        clientX: 100,
+        clientY: 150,
+        bubbles: true,
+      });
+
+      const beforeTime = new Date();
+      canvas.dispatchEvent(clickEvent);
+      const afterTime = new Date();
+
+      const sent = JSON.parse(mockWebSocket.sent[0]);
+      expect(sent.timestamp).toBeDefined();
+
+      // Check ISO format
+      expect(sent.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+
+      // Check timestamp is within expected range
+      const eventTime = new Date(sent.timestamp);
+      expect(eventTime.getTime()).toBeGreaterThanOrEqual(beforeTime.getTime());
+      expect(eventTime.getTime()).toBeLessThanOrEqual(afterTime.getTime() + 100);
+    });
+
+    it('should have reasonable timestamp accuracy', () => {
+      const canvas = document.getElementById('canvas') as HTMLCanvasElement;
+
+      for (let i = 0; i < 5; i++) {
+        const clickEvent = new MouseEvent('click', {
+          clientX: 100 + i * 10,
+          clientY: 150 + i * 10,
+          bubbles: true,
+        });
+        canvas.dispatchEvent(clickEvent);
+
+        const sent = JSON.parse(mockWebSocket.sent[i]);
+        const eventTime = new Date(sent.timestamp);
+        const now = new Date();
+        const diff = now.getTime() - eventTime.getTime();
+
+        expect(diff).toBeGreaterThanOrEqual(0);
+        expect(diff).toBeLessThan(100); // Should be within 100ms
+      }
+    });
+  });
+
+  describe('Connection Resilience', () => {
+    it('should draw circle even when disconnected', () => {
+      const canvas = document.getElementById('canvas') as HTMLCanvasElement;
+      const ctx = canvas.getContext('2d') as CanvasRenderingContext2D;
+      const arcSpy = jest.spyOn(ctx, 'arc');
+
+      // Disconnect WebSocket
+      mockWebSocket.readyState = 3; // CLOSED
+
+      const clickEvent = new MouseEvent('click', {
+        clientX: 100,
+        clientY: 150,
+        bubbles: true,
+      });
+
+      canvas.dispatchEvent(clickEvent);
+
+      // Local circle should still be drawn
+      expect(arcSpy).toHaveBeenCalled();
+      arcSpy.mockRestore();
+    });
+
+    it('should not send event while disconnected', () => {
+      const canvas = document.getElementById('canvas') as HTMLCanvasElement;
+      mockWebSocket.readyState = 3; // CLOSED
+
+      const clickEvent = new MouseEvent('click', {
+        clientX: 100,
+        clientY: 150,
+        bubbles: true,
+      });
+
+      canvas.dispatchEvent(clickEvent);
+
+      expect(mockWebSocket.send).not.toHaveBeenCalled();
+    });
+
+    it('should send subsequent clicks after reconnection', () => {
+      const canvas = document.getElementById('canvas') as HTMLCanvasElement;
+
+      // Click while disconnected
+      mockWebSocket.readyState = 3;
+      const click1 = new MouseEvent('click', { clientX: 100, clientY: 100, bubbles: true });
+      canvas.dispatchEvent(click1);
+      expect(mockWebSocket.send).not.toHaveBeenCalled();
+
+      // Reconnect
+      mockWebSocket.readyState = 1;
+      const click2 = new MouseEvent('click', { clientX: 200, clientY: 200, bubbles: true });
+      canvas.dispatchEvent(click2);
+
+      expect(mockWebSocket.send).toHaveBeenCalledTimes(1);
+    });
+
+    it('should continue drawing after network issues', () => {
+      const canvas = document.getElementById('canvas') as HTMLCanvasElement;
+      const ctx = canvas.getContext('2d') as CanvasRenderingContext2D;
+      const arcSpy = jest.spyOn(ctx, 'arc');
+
+      // Simulate network issue
+      mockWebSocket.readyState = 0; // CONNECTING
+
+      const click1 = new MouseEvent('click', { clientX: 100, clientY: 100, bubbles: true });
+      canvas.dispatchEvent(click1);
+
+      expect(arcSpy).toHaveBeenCalledTimes(1);
+
+      // Network recovers
+      mockWebSocket.readyState = 1;
+
+      const click2 = new MouseEvent('click', { clientX: 200, clientY: 200, bubbles: true });
+      canvas.dispatchEvent(click2);
+
+      expect(arcSpy).toHaveBeenCalledTimes(2);
+      arcSpy.mockRestore();
+    });
+  });
+
+  describe('Remote Event Display', () => {
+    it('should draw circle when receiving remote event', () => {
+      const canvas = document.getElementById('canvas') as HTMLCanvasElement;
+      const ctx = canvas.getContext('2d') as CanvasRenderingContext2D;
+      const arcSpy = jest.spyOn(ctx, 'arc');
+
+      mockWebSocket._triggerEvent('message', {
+        data: JSON.stringify({ x: 200, y: 300 }),
+      });
+
+      expect(arcSpy).toHaveBeenCalled();
+      arcSpy.mockRestore();
+    });
+
+    it('should display remote circle at correct location', () => {
+      const canvas = document.getElementById('canvas') as HTMLCanvasElement;
+      const ctx = canvas.getContext('2d') as CanvasRenderingContext2D;
+      const arcSpy = jest.spyOn(ctx, 'arc');
+
+      mockWebSocket._triggerEvent('message', {
+        data: JSON.stringify({ x: 250, y: 350 }),
+      });
+
+      expect(arcSpy).toHaveBeenCalledWith(250, 350, 8, 0, Math.PI * 2);
+      arcSpy.mockRestore();
+    });
+
+    it('should display both local and remote circles', () => {
+      const canvas = document.getElementById('canvas') as HTMLCanvasElement;
+      const ctx = canvas.getContext('2d') as CanvasRenderingContext2D;
+      const arcSpy = jest.spyOn(ctx, 'arc');
+
+      // Local click
+      const clickEvent = new MouseEvent('click', {
+        clientX: 100,
+        clientY: 100,
+        bubbles: true,
+      });
+      canvas.dispatchEvent(clickEvent);
+
+      // Remote click
+      mockWebSocket._triggerEvent('message', {
+        data: JSON.stringify({ x: 200, y: 200 }),
+      });
+
+      expect(arcSpy).toHaveBeenCalledTimes(2);
+      arcSpy.mockRestore();
+    });
+  });
+
+  describe('User Interaction Flows', () => {
+    it('should handle complete interaction: connect, click, receive', () => {
+      const canvas = document.getElementById('canvas') as HTMLCanvasElement;
+      const indicator = document.getElementById('connectionIndicator') as HTMLElement;
+
+      // Connection opens
+      mockWebSocket._triggerEvent('open', {});
+      expect(indicator.classList.contains('connected')).toBe(true);
+
+      // User clicks
+      const clickEvent = new MouseEvent('click', {
+        clientX: 100,
+        clientY: 100,
+        bubbles: true,
+      });
+      canvas.dispatchEvent(clickEvent);
+      expect(mockWebSocket.send).toHaveBeenCalled();
+
+      // Receive remote event
+      mockWebSocket._triggerEvent('message', {
+        data: JSON.stringify({ x: 200, y: 200 }),
+      });
+
+      // Connection closes
+      mockWebSocket._triggerEvent('close', {});
+      expect(indicator.classList.contains('connected')).toBe(false);
+    });
+
+    it('should maintain state through multiple interactions', () => {
+      const canvas = document.getElementById('canvas') as HTMLCanvasElement;
+      const indicator = document.getElementById('connectionIndicator') as HTMLElement;
+
+      // Simulate realistic usage
+      mockWebSocket._triggerEvent('open', {});
+
+      for (let i = 0; i < 5; i++) {
+        const clickEvent = new MouseEvent('click', {
+          clientX: 100 + i * 20,
+          clientY: 100 + i * 20,
+          bubbles: true,
+        });
+        canvas.dispatchEvent(clickEvent);
+
+        mockWebSocket._triggerEvent('message', {
+          data: JSON.stringify({ x: 200 + i * 20, y: 200 + i * 20 }),
+        });
+      }
+
+      expect(mockWebSocket.send).toHaveBeenCalledTimes(5);
+      expect(indicator.classList.contains('connected')).toBe(true);
+    });
+  });
+});

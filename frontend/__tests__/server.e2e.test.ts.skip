@@ -1,0 +1,399 @@
+/**
+ * Server End-to-End Tests
+ * Tests server functionality with real WebSocket connections
+ */
+
+import { startTestServer, createAndConnectClient, waitForMessage } from './testUtils';
+
+describe('Server E2E Tests', () => {
+  let server: any;
+  let port: number;
+
+  beforeEach(async () => {
+    const result = await startTestServer();
+    server = result.server;
+    port = result.port;
+  });
+
+  afterEach(async () => {
+    if (server?.cleanup) {
+      await server.cleanup();
+    }
+  });
+
+  describe('Message Broadcasting', () => {
+    it('should broadcast message to all clients except sender', async () => {
+      const clientA = await createAndConnectClient(`ws://localhost:${port}/connect`);
+      const clientB = await createAndConnectClient(`ws://localhost:${port}/connect`);
+      const clientC = await createAndConnectClient(`ws://localhost:${port}/connect`);
+
+      const messagePromises = Promise.all([
+        waitForMessage(clientB.ws, 2000),
+        waitForMessage(clientC.ws, 2000),
+      ]);
+
+      const testMessage = { x: 100, y: 200, timestamp: '2024-01-01T00:00:00Z' };
+      clientA.ws.send(JSON.stringify(testMessage));
+
+      const messages = await messagePromises;
+      expect(messages).toHaveLength(2);
+      expect(messages[0]).toEqual(testMessage);
+      expect(messages[1]).toEqual(testMessage);
+
+      clientA.close();
+      clientB.close();
+      clientC.close();
+    });
+
+    it('should not send message back to sender', async () => {
+      const clientA = await createAndConnectClient(`ws://localhost:${port}/connect`);
+      const clientB = await createAndConnectClient(`ws://localhost:${port}/connect`);
+
+      let senderReceivedMessage = false;
+      const senderListener = () => {
+        senderReceivedMessage = true;
+      };
+
+      clientA.ws.addEventListener('message', senderListener);
+
+      clientA.ws.send(JSON.stringify({ x: 100, y: 100 }));
+
+      const receivedByB = await waitForMessage(clientB.ws, 1000);
+      expect(receivedByB.x).toBe(100);
+
+      // Wait a bit to ensure sender doesn't receive
+      await new Promise(resolve => setTimeout(resolve, 200));
+      expect(senderReceivedMessage).toBe(false);
+
+      clientA.ws.removeEventListener('message', senderListener);
+      clientA.close();
+      clientB.close();
+    });
+
+    it('should handle broadcast to multiple clients', async () => {
+      const clients = [];
+      for (let i = 0; i < 5; i++) {
+        clients.push(await createAndConnectClient(`ws://localhost:${port}/connect`));
+      }
+
+      const messagePromises = clients.slice(1).map(client =>
+        waitForMessage(client.ws, 2000)
+      );
+
+      const testMessage = { x: 50, y: 75 };
+      clients[0].ws.send(JSON.stringify(testMessage));
+
+      const messages = await Promise.all(messagePromises);
+      expect(messages).toHaveLength(4);
+      messages.forEach(msg => {
+        expect(msg).toEqual(testMessage);
+      });
+
+      clients.forEach(client => client.close());
+    });
+
+    it('should handle concurrent messages from multiple clients', async () => {
+      const clientA = await createAndConnectClient(`ws://localhost:${port}/connect`);
+      const clientB = await createAndConnectClient(`ws://localhost:${port}/connect`);
+      const clientC = await createAndConnectClient(`ws://localhost:${port}/connect`);
+
+      const bMessages: any[] = [];
+      const cMessages: any[] = [];
+
+      let bCount = 0;
+      const bListener = (event: any) => {
+        bMessages.push(JSON.parse(event.data));
+        bCount++;
+      };
+
+      let cCount = 0;
+      const cListener = (event: any) => {
+        cMessages.push(JSON.parse(event.data));
+        cCount++;
+      };
+
+      clientB.ws.addEventListener('message', bListener);
+      clientC.ws.addEventListener('message', cListener);
+
+      // Send messages from A and B concurrently
+      clientA.ws.send(JSON.stringify({ id: 1, sender: 'A' }));
+      clientB.ws.send(JSON.stringify({ id: 2, sender: 'B' }));
+
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      expect(bMessages.length).toBeGreaterThanOrEqual(1);
+      expect(cMessages.length).toBeGreaterThanOrEqual(2);
+
+      clientA.ws.removeEventListener('message', bListener);
+      clientB.ws.removeEventListener('message', cListener);
+      clientA.close();
+      clientB.close();
+      clientC.close();
+    });
+  });
+
+  describe('Connection Lifecycle', () => {
+    it('should handle client connection', async () => {
+      const client = await createAndConnectClient(`ws://localhost:${port}/connect`);
+      expect(client.ws.readyState).toBe(1); // OPEN
+      client.close();
+    });
+
+    it('should handle client disconnection', async () => {
+      const clientA = await createAndConnectClient(`ws://localhost:${port}/connect`);
+      const clientB = await createAndConnectClient(`ws://localhost:${port}/connect`);
+
+      clientA.close();
+
+      // After A disconnects, B's messages should not go to A
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      let bReceivedMessage = false;
+      const bListener = () => {
+        bReceivedMessage = true;
+      };
+
+      clientB.ws.addEventListener('message', bListener);
+
+      // No other client to send to A anymore
+      // This test verifies no errors occur during disconnection
+
+      clientB.ws.removeEventListener('message', bListener);
+      clientB.close();
+    });
+
+    it('should handle reconnection after disconnection', async () => {
+      const clientA = await createAndConnectClient(`ws://localhost:${port}/connect`);
+      const clientB = await createAndConnectClient(`ws://localhost:${port}/connect`);
+
+      // Initial message
+      clientA.ws.send(JSON.stringify({ x: 100 }));
+      const msg1 = await waitForMessage(clientB.ws, 1000);
+      expect(msg1.x).toBe(100);
+
+      // Disconnect and reconnect A
+      clientA.close();
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      const clientA2 = await createAndConnectClient(`ws://localhost:${port}/connect`);
+
+      // Send message from B, should go to A2
+      clientB.ws.send(JSON.stringify({ x: 200 }));
+      const msg2 = await waitForMessage(clientA2.ws, 1000);
+      expect(msg2.x).toBe(200);
+
+      clientA2.close();
+      clientB.close();
+    });
+
+    it('should handle multiple connection cycles', async () => {
+      for (let i = 0; i < 3; i++) {
+        const clientA = await createAndConnectClient(`ws://localhost:${port}/connect`);
+        const clientB = await createAndConnectClient(`ws://localhost:${port}/connect`);
+
+        clientA.ws.send(JSON.stringify({ cycle: i }));
+        const msg = await waitForMessage(clientB.ws, 1000);
+        expect(msg.cycle).toBe(i);
+
+        clientA.close();
+        clientB.close();
+      }
+    });
+  });
+
+  describe('Data Integrity', () => {
+    it('should preserve message data through broadcast', async () => {
+      const clientA = await createAndConnectClient(`ws://localhost:${port}/connect`);
+      const clientB = await createAndConnectClient(`ws://localhost:${port}/connect`);
+
+      const originalMessage = {
+        x: 123,
+        y: 456,
+        timestamp: '2024-01-01T12:30:45.123Z',
+        extra: 'data',
+        nested: { key: 'value' },
+      };
+
+      clientA.ws.send(JSON.stringify(originalMessage));
+      const received = await waitForMessage(clientB.ws, 1000);
+
+      expect(received).toEqual(originalMessage);
+
+      clientA.close();
+      clientB.close();
+    });
+
+    it('should handle large coordinate values', async () => {
+      const clientA = await createAndConnectClient(`ws://localhost:${port}/connect`);
+      const clientB = await createAndConnectClient(`ws://localhost:${port}/connect`);
+
+      const message = { x: 10000, y: 20000 };
+      clientA.ws.send(JSON.stringify(message));
+      const received = await waitForMessage(clientB.ws, 1000);
+
+      expect(received.x).toBe(10000);
+      expect(received.y).toBe(20000);
+
+      clientA.close();
+      clientB.close();
+    });
+
+    it('should handle decimal coordinate values', async () => {
+      const clientA = await createAndConnectClient(`ws://localhost:${port}/connect`);
+      const clientB = await createAndConnectClient(`ws://localhost:${port}/connect`);
+
+      const message = { x: 123.456, y: 789.012 };
+      clientA.ws.send(JSON.stringify(message));
+      const received = await waitForMessage(clientB.ws, 1000);
+
+      expect(received.x).toBe(123.456);
+      expect(received.y).toBe(789.012);
+
+      clientA.close();
+      clientB.close();
+    });
+  });
+
+  describe('Error Handling', () => {
+    it('should handle invalid JSON gracefully', async () => {
+      const clientA = await createAndConnectClient(`ws://localhost:${port}/connect`);
+      const clientB = await createAndConnectClient(`ws://localhost:${port}/connect`);
+
+      // Send invalid JSON
+      (clientA.ws as any).send('{invalid json}');
+
+      // Send valid JSON to verify server still works
+      await new Promise(resolve => setTimeout(resolve, 100));
+      clientA.ws.send(JSON.stringify({ x: 100 }));
+
+      const msg = await waitForMessage(clientB.ws, 1000);
+      expect(msg.x).toBe(100);
+
+      clientA.close();
+      clientB.close();
+    });
+
+    it('should continue operating after one client error', async () => {
+      const clientA = await createAndConnectClient(`ws://localhost:${port}/connect`);
+      const clientB = await createAndConnectClient(`ws://localhost:${port}/connect`);
+      const clientC = await createAndConnectClient(`ws://localhost:${port}/connect`);
+
+      // A has error
+      (clientA.ws as any).send('invalid');
+
+      // B and C should still communicate
+      clientB.ws.send(JSON.stringify({ x: 100 }));
+      const received = await waitForMessage(clientC.ws, 1000);
+      expect(received.x).toBe(100);
+
+      clientA.close();
+      clientB.close();
+      clientC.close();
+    });
+
+    it('should handle client closing during message send', async () => {
+      const clientA = await createAndConnectClient(`ws://localhost:${port}/connect`);
+      const clientB = await createAndConnectClient(`ws://localhost:${port}/connect`);
+      const clientC = await createAndConnectClient(`ws://localhost:${port}/connect`);
+
+      // Close B
+      clientB.close();
+
+      // A sends, should go to C but not to B
+      clientA.ws.send(JSON.stringify({ x: 100 }));
+      const msg = await waitForMessage(clientC.ws, 1000);
+      expect(msg.x).toBe(100);
+
+      clientA.close();
+      clientC.close();
+    });
+  });
+
+  describe('Sequential Operations', () => {
+    it('should handle multiple rapid messages', async () => {
+      const clientA = await createAndConnectClient(`ws://localhost:${port}/connect`);
+      const clientB = await createAndConnectClient(`ws://localhost:${port}/connect`);
+
+      const messages: any[] = [];
+      const listener = (event: any) => {
+        messages.push(JSON.parse(event.data));
+      };
+      clientB.ws.addEventListener('message', listener);
+
+      // Send 5 rapid messages
+      for (let i = 0; i < 5; i++) {
+        clientA.ws.send(JSON.stringify({ id: i, x: 100 + i * 10 }));
+      }
+
+      // Wait for all messages
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      expect(messages.length).toBe(5);
+      expect(messages[0].id).toBe(0);
+      expect(messages[4].id).toBe(4);
+
+      clientB.ws.removeEventListener('message', listener);
+      clientA.close();
+      clientB.close();
+    });
+
+    it('should maintain message order', async () => {
+      const clientA = await createAndConnectClient(`ws://localhost:${port}/connect`);
+      const clientB = await createAndConnectClient(`ws://localhost:${port}/connect`);
+
+      const messages: any[] = [];
+      const listener = (event: any) => {
+        messages.push(JSON.parse(event.data));
+      };
+      clientB.ws.addEventListener('message', listener);
+
+      // Send messages in sequence
+      for (let i = 0; i < 10; i++) {
+        clientA.ws.send(JSON.stringify({ sequence: i }));
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      expect(messages.length).toBe(10);
+      for (let i = 0; i < 10; i++) {
+        expect(messages[i].sequence).toBe(i);
+      }
+
+      clientB.ws.removeEventListener('message', listener);
+      clientA.close();
+      clientB.close();
+    });
+
+    it('should handle interleaved operations', async () => {
+      const clientA = await createAndConnectClient(`ws://localhost:${port}/connect`);
+      const clientB = await createAndConnectClient(`ws://localhost:${port}/connect`);
+
+      const aMessages: any[] = [];
+      const bMessages: any[] = [];
+
+      clientA.ws.addEventListener('message', (event: any) => {
+        aMessages.push(JSON.parse(event.data));
+      });
+
+      clientB.ws.addEventListener('message', (event: any) => {
+        bMessages.push(JSON.parse(event.data));
+      });
+
+      // Interleave operations
+      clientA.ws.send(JSON.stringify({ from: 'A', num: 1 }));
+      clientB.ws.send(JSON.stringify({ from: 'B', num: 1 }));
+      clientA.ws.send(JSON.stringify({ from: 'A', num: 2 }));
+      clientB.ws.send(JSON.stringify({ from: 'B', num: 2 }));
+
+      await new Promise(resolve => setTimeout(resolve, 300));
+
+      expect(aMessages.length).toBe(2);
+      expect(bMessages.length).toBe(2);
+      expect(aMessages[0].from).toBe('B');
+      expect(bMessages[0].from).toBe('A');
+
+      clientA.close();
+      clientB.close();
+    });
+  });
+});
