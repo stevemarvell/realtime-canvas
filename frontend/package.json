@@ -4,8 +4,8 @@
   "description": "Frontend server for realtime canvas application",
   "main": "server.ts",
   "scripts": {
-    "start": "ts-node server.ts",
-    "dev": "ts-node server.ts"
+    "start": "ts-node --project tsconfig.json server.ts",
+    "dev": "ts-node --project tsconfig.json server.ts"
   },
   "dependencies": {
     "express": "^4.18.2"
