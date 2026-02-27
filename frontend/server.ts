@@ -21,7 +21,7 @@ const server = http.createServer(app);
 const wss = new WebSocket.Server({ server, path: '/connect' });
 
 // Track connected clients
-const clients = new Set<WebSocket>();
+export const clients = new Set<WebSocket>();
 
 // Handle WebSocket connections
 wss.on('connection', (ws) => {
@@ -53,7 +53,11 @@ wss.on('connection', (ws) => {
   });
 });
 
-// Start server
-server.listen(PORT, () => {
-  console.log(`Server is running on http://localhost:${PORT}`);
-});
+export { app, server, wss };
+
+// Start server only when run directly
+if (require.main === module) {
+  server.listen(PORT, () => {
+    console.log(`Server is running on http://localhost:${PORT}`);
+  });
+}
