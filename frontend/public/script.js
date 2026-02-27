@@ -10,66 +10,68 @@ if (canvas) {
   canvas.height = rect.height;
 }
 
-// Establish WebSocket connection
-const ws = new WebSocket('ws://localhost:3000/connect');
+// Unique ID for this browser tab, used to filter out our own Spaces events
+const clientId = `user-${crypto.randomUUID()}`;
 
-// Handle WebSocket connection open
-ws.addEventListener('open', () => {
-  console.log('WebSocket connection established');
-  indicator.classList.add('connected');
+// Connect to Ably using server-side token auth (keeps API key off the client)
+const ablyClient = new Ably.Realtime({
+  authUrl: '/auth',
+  authParams: { clientId },
+  clientId,
 });
 
-// Handle WebSocket connection close
-ws.addEventListener('close', () => {
-  console.log('WebSocket connection closed');
-  indicator.classList.remove('connected');
-});
+// Initialise Ably Spaces on top of the Ably Realtime client
+const spaces = new Spaces(ablyClient);
 
-// Handle WebSocket errors
-ws.addEventListener('error', (event) => {
-  console.error('WebSocket error:', event);
-});
+async function init() {
+  const space = await spaces.get('canvas-room');
 
-// Handle incoming messages from other clients
-ws.addEventListener('message', (event) => {
-  const remoteEvent = JSON.parse(event.data);
-  console.log('Received remote event:', remoteEvent);
+  // Reflect Ably connection state in the indicator dot
+  ablyClient.connection.on('connected', () => indicator.classList.add('connected'));
+  ablyClient.connection.on('disconnected', () => indicator.classList.remove('connected'));
+  ablyClient.connection.on('closed', () => indicator.classList.remove('connected'));
 
-  // Draw a circle at the remote click location
-  if (canvas && canvas.getContext) {
-    const ctx = canvas.getContext('2d');
-    ctx.fillStyle = 'rgba(0, 150, 255, 0.6)';
-    ctx.beginPath();
-    ctx.arc(remoteEvent.x, remoteEvent.y, 8, 0, Math.PI * 2);
-    ctx.fill();
-  }
-});
+  // Enter the space so our presence is tracked
+  await space.enter();
 
-// Set up click listener on canvas
-if (canvas) {
-  canvas.addEventListener('click', (event) => {
-    const rect = canvas.getBoundingClientRect();
-    const x = event.clientX - rect.left;
-    const y = event.clientY - rect.top;
-    const timestamp = new Date().toISOString();
+  // Subscribe to location updates — each member's location is their last draw position
+  space.locations.subscribe('update', (locationUpdate) => {
+    // Ignore updates we published ourselves
+    if (locationUpdate.member.clientId === clientId) return;
 
-    const pressEvent = { x, y, timestamp };
+    const loc = locationUpdate.currentLocation;
+    if (!loc || canvas === null) return;
 
-    // Draw local click
-    if (canvas && canvas.getContext) {
+    // Draw a blue circle at the remote member's draw position
+    if (canvas.getContext) {
       const ctx = canvas.getContext('2d');
-      ctx.fillStyle = 'rgba(255, 100, 0, 0.8)';
+      ctx.fillStyle = 'rgba(0, 150, 255, 0.6)';
       ctx.beginPath();
-      ctx.arc(x, y, 8, 0, Math.PI * 2);
+      ctx.arc(loc.x, loc.y, 8, 0, Math.PI * 2);
       ctx.fill();
     }
-
-    // Send press event to server if WebSocket is open
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(pressEvent));
-      console.log('Press event sent:', pressEvent);
-    } else {
-      console.warn('WebSocket not connected');
-    }
   });
+
+  // Set up click listener on canvas
+  if (canvas) {
+    canvas.addEventListener('click', (event) => {
+      const rect = canvas.getBoundingClientRect();
+      const x = event.clientX - rect.left;
+      const y = event.clientY - rect.top;
+
+      // Draw local click in orange
+      if (canvas.getContext) {
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = 'rgba(255, 100, 0, 0.8)';
+        ctx.beginPath();
+        ctx.arc(x, y, 8, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Publish draw position to all other members via Ably Spaces locations
+      space.locations.set({ x, y });
+    });
+  }
 }
+
+init().catch(console.error);
