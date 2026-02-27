@@ -6,7 +6,8 @@
   "scripts": {
     "start": "ts-node --project tsconfig.json server.ts",
     "dev": "ts-node --project tsconfig.json server.ts",
-    "test": "jest"
+    "test": "jest",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "ably": "^2.0.0",
@@ -21,6 +22,7 @@
     "supertest": "^7.2.2",
     "ts-jest": "^29.4.6",
     "ts-node": "^10.9.1",
+    "@playwright/test": "1.56.1",
     "typescript": "^5.1.3"
   }
 }
