@@ -1,7 +1,7 @@
 import express from 'express';
 import path from 'path';
 import http from 'http';
-import WebSocket from 'ws';
+import Ably from 'ably';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -14,46 +14,24 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
+// Ably token auth endpoint - issues token requests to browser clients,
+// keeping the API key server-side only
+const ablyRest = new Ably.Rest(process.env.ABLY_API_KEY ?? '');
+
+app.get('/auth', async (req, res) => {
+  try {
+    const clientId = (req.query.clientId as string) || `user-${Date.now()}`;
+    const tokenRequest = await ablyRest.auth.createTokenRequest({ clientId });
+    res.json(tokenRequest);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to create token' });
+  }
+});
+
 // Create HTTP server from Express app
 const server = http.createServer(app);
 
-// Create WebSocket server
-const wss = new WebSocket.Server({ server, path: '/connect' });
-
-// Track connected clients
-export const clients = new Set<WebSocket>();
-
-// Handle WebSocket connections
-wss.on('connection', (ws) => {
-  console.log('Client connected');
-  clients.add(ws);
-
-  // Handle incoming messages from client
-  ws.on('message', (data: string) => {
-    const message = JSON.parse(data);
-    console.log('Received press event:', message);
-
-    // Broadcast event to all connected clients except the sender
-    clients.forEach((client) => {
-      if (client !== ws && client.readyState === WebSocket.OPEN) {
-        client.send(JSON.stringify(message));
-      }
-    });
-  });
-
-  // Handle client disconnect
-  ws.on('close', () => {
-    console.log('Client disconnected');
-    clients.delete(ws);
-  });
-
-  // Handle errors
-  ws.on('error', (error) => {
-    console.error('WebSocket error:', error);
-  });
-});
-
-export { app, server, wss };
+export { app, server };
 
 // Start server only when run directly
 if (require.main === module) {
