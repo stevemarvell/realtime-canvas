@@ -14,6 +14,16 @@ const ABLY_MOCK = `
             if (event === 'connected') setTimeout(fn, 10);
           },
         };
+        // Stub the channels API used by the AI chat feature.
+        // subscribe/unsubscribe are no-ops in these tests.
+        this.channels = {
+          get: function () {
+            return {
+              subscribe: function () {},
+              unsubscribe: function () {},
+            };
+          },
+        };
       }
     },
   };

@@ -1,7 +1,12 @@
 import http from 'http';
 import request from 'supertest';
 
+// ---------------------------------------------------------------------------
 // Mock ably before importing server so the module-level ablyRest uses the mock
+// ---------------------------------------------------------------------------
+const mockPublish = jest.fn().mockResolvedValue(undefined);
+const mockChannelGet = jest.fn().mockReturnValue({ publish: mockPublish });
+
 jest.mock('ably', () => ({
   Rest: jest.fn().mockImplementation(() => ({
     auth: {
@@ -12,7 +17,27 @@ jest.mock('ably', () => ({
         mac: 'fakemac',
       }),
     },
+    channels: {
+      get: mockChannelGet,
+    },
   })),
+}));
+
+// ---------------------------------------------------------------------------
+// Mock Vercel AI SDK and Anthropic provider
+// ---------------------------------------------------------------------------
+jest.mock('ai', () => ({
+  streamText: jest.fn().mockReturnValue({
+    fullStream: (async function* () {
+      yield { type: 'text-delta', textDelta: 'Hello' };
+      yield { type: 'text-delta', textDelta: ' world' };
+      yield { type: 'finish', finishReason: 'stop', usage: {} };
+    })(),
+  }),
+}));
+
+jest.mock('@ai-sdk/anthropic', () => ({
+  anthropic: jest.fn().mockReturnValue('mock-model'),
 }));
 
 import { app, server } from '../server';
@@ -55,5 +80,43 @@ describe('GET /auth', () => {
     const res = await request(app).get('/auth');
     expect(res.status).toBe(200);
     expect(res.body).toHaveProperty('keyName');
+  });
+});
+
+describe('POST /chat', () => {
+  beforeEach(() => {
+    mockPublish.mockClear();
+    mockChannelGet.mockClear();
+  });
+
+  it('returns 400 when prompt is missing', async () => {
+    const res = await request(app)
+      .post('/chat')
+      .send({ requestId: 'test-request-id' });
+    expect(res.status).toBe(400);
+    expect(res.body).toHaveProperty('error');
+  });
+
+  it('returns 400 when requestId is missing', async () => {
+    const res = await request(app)
+      .post('/chat')
+      .send({ prompt: 'Hello' });
+    expect(res.status).toBe(400);
+    expect(res.body).toHaveProperty('error');
+  });
+
+  it('returns channelName immediately without waiting for AI stream', async () => {
+    const res = await request(app)
+      .post('/chat')
+      .send({ prompt: 'Hello', requestId: 'req-123' });
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty('channelName', 'ai-stream:req-123');
+  });
+
+  it('opens the correct Ably channel for the requestId', async () => {
+    await request(app)
+      .post('/chat')
+      .send({ prompt: 'Hello', requestId: 'req-abc' });
+    expect(mockChannelGet).toHaveBeenCalledWith('ai-stream:req-abc');
   });
 });
